@@ -1,0 +1,13 @@
+name: dfs-analysis
+channels:
+  - conda-forge
+  - https://conda.anaconda.org/gurobi
+  - defaults
+dependencies:
+  - requests
+  - python
+  - pandas
+  - types-requests
+  - streamlit
+  - pandas-stubs
+prefix: C:\Users\sam.secher\AppData\Local\anaconda3\envs\dfs-analysis
