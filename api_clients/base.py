@@ -7,8 +7,9 @@ import requests
 
 
 class BaseClient(ABC):
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, rate_limit: int) -> None:
         self.base_url = base_url
+        self.request_delay = 1 / rate_limit # delay between requests in seconds
         self.logger = logging.getLogger(__name__)
 
     def _get(self, url: str, params: Optional[dict[str, Any]] = None, timeout: int = 30) -> requests.Response:
@@ -33,15 +34,13 @@ class BaseClient(ABC):
 
         try:
             self.logger.debug(f"Making GET request to: {url}")
+            kwargs = { "url": url }
             if params:
                 self.logger.debug(f"Request params: {params}")
                 params_encoded = parse.urlencode(params)
+                kwargs["params"] = params_encoded
 
-            response = requests.get(
-                url,
-                params=params_encoded,
-                timeout=timeout,
-            )
+            response = requests.get(**kwargs, timeout=timeout) # type: ignore[arg-type]
         except requests.exceptions.RequestException:
             self.logger.exception(f"Request exception for URL: {url}")
             raise
