@@ -18,7 +18,35 @@
             "request": "launch",
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
-            "args": ["--log-level", "DEBUG"]
+            "args": [
+                "--log-level",
+                "DEBUG",
+                "--server.port",
+                "8080",
+                "--interface",
+                "cmd"
+            ]
+        },
+        {
+            "name": "Python: Streamlit Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "${workspaceFolder}/main.py",
+                "--server.port",
+                "8080",
+                "--server.headless",
+                "true",
+                "--server.runOnSave",
+                "false",
+                "--",
+                "--interface",
+                "streamlit",
+                "--log-level",
+                "INFO"
+            ]
         }
     ]
 }

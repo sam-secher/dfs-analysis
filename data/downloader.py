@@ -7,8 +7,8 @@ from api_clients.neso import NESOClient
 
 class DataDownloader:
     def __init__(self, data_dir: str, rate_limit: int = 2) -> None:
-        self.neso_client = NESOClient()
-        self.elexon_client = ElexonClient()
+        self.neso_client = NESOClient(rate_limit=rate_limit)
+        self.elexon_client = ElexonClient(rate_limit=rate_limit)
         self.data_dir = data_dir
 
         self.request_delay = 1 / rate_limit # delay between requests in seconds
@@ -25,7 +25,7 @@ class DataDownloader:
 
             neso_dir.mkdir(exist_ok=True)
 
-            data = self.neso_client.get_interconnector_requirements(start_dt, end_dt)
+            data = self.neso_client.get_interconnector_requirements(start_dt, end_dt, limit=10000)
             data.to_csv(neso_dir / "interconnector_results.csv", index=False)
 
         if download_dfs_resources:
