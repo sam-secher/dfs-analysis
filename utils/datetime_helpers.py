@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+import pandas as pd
 
 # ISO_Z_MILLIS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 
@@ -22,8 +23,14 @@ def to_iso_z_ms(dt: datetime) -> str:
     #     raise ValueError(msg)
     # return s
 
-def settlement_period(dt: datetime) -> int:
+def datetime_to_sp(dt: datetime) -> int:
     return (dt.hour * 2 + dt.minute // 30) + 1 # 1-48
+
+def datetime_to_sp_series(ts: "pd.Series[pd.Timestamp]") -> "pd.Series[int]":
+    return (ts.dt.hour * 2 + ts.dt.minute // 30) + 1 # 1-48
+
+def sp_to_timedelta_series(ts: "pd.Series[int]") -> "pd.Series[pd.Timedelta]":
+    return pd.to_timedelta((ts-1) * 30, unit="m")
 
 def round_down_hh_mm(dt: datetime) -> datetime:
     minute = 30 if dt.minute > 30 else 0

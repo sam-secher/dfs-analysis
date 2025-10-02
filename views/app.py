@@ -223,6 +223,8 @@ class App:
             - Keep to **interpretable** models with clear feature provenance.
             - Emphasise **data timing**: only use inputs **available by ~10:00** for same-day guidance.
             - Treat imbalance price/NIV as **historical context**, not day-ahead inputs.
+            - Incorporate weather and demand forecasts as additional inputs.
+            - Consider developing a stack model to compare DFS bids with alternatives.
                     """,
         )
 

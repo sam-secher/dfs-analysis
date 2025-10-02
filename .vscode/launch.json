@@ -21,8 +21,6 @@
             "args": [
                 "--log-level",
                 "DEBUG",
-                "--server.port",
-                "8080",
                 "--interface",
                 "cmd"
             ]

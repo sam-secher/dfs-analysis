@@ -5,7 +5,7 @@ from urllib import parse
 import pandas as pd
 
 from api_clients.base import BaseClient
-from utils.datetime_helpers import generate_daily_dates, generate_weekly_dates, round_down_hh_mm, round_up_hh_mm, settlement_period, to_date_str, to_iso_z_minutes
+from utils.datetime_helpers import generate_daily_dates, generate_weekly_dates, round_down_hh_mm, round_up_hh_mm, datetime_to_sp, to_date_str, to_iso_z_minutes
 
 
 class ElexonClient(BaseClient):
@@ -44,8 +44,8 @@ class ElexonClient(BaseClient):
 
             start_formatted = to_iso_z_minutes(week_start_dt)
             end_formatted = to_iso_z_minutes(week_end_dt)
-            sp_start = settlement_period(week_start_dt)
-            sp_end = settlement_period(week_end_dt)
+            sp_start = datetime_to_sp(week_start_dt)
+            sp_end = datetime_to_sp(week_end_dt)
 
             request_params = {
                 "from": start_formatted,
