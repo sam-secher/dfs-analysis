@@ -1,13 +1,23 @@
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime
+from typing import Any, cast
 
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
+from streamlit.elements.plotly_chart import PlotlyState
+
+from model.forecasting import DFSForecastingModel
+from utils.datetime_helpers import datetime_to_sp_series, datetime_to_sp
+
 
 class App:
-    def __init__(self) -> None:
+    def __init__(self, forecasting_model: DFSForecastingModel) -> None:
+        self._model = forecasting_model
         self.set_page_config()
-        self.PAGES = ("Home", "Dashboard", "Next steps")
+        self.PAGES = ("Home", "Dashboard", "Forecasting", "Next steps")
         self.page = "Home"
-        self.render_sidebar()
+        self._render_sidebar()
         self.route() # fire on every script reload
 
     def set_page_config(self) -> None:
@@ -18,68 +28,198 @@ class App:
             initial_sidebar_state="expanded",
         )
 
-    def render_sidebar(self) -> None:
+    def _render_sidebar(self) -> None:
 
         with st.sidebar:
             st.title("DFS Analysis")
             self.page = st.radio("Navigate", self.PAGES, index=0)
             st.markdown("---")
-            st.caption("Quick controls (global)")
+            st.caption("Model Information")
 
             # Global date window (used by Dashboard)
             today = datetime.now(tz=UTC).date()
-            default_start = today - timedelta(days=120)
+            # default_start = today - timedelta(days=120)
+            start, end = self._model.model_data_start, self._model.model_data_end
             date_range = st.date_input(
                 "Date range",
-                (default_start, today),
-                help="Filters for the historic charts on the Dashboard.",
+                (start, end),
+                help="Date range for data pre-loaded from NESO and Elexon APIs.",
+                disabled=True,
             )
             st.session_state["date_range"] = date_range
 
             # Morning-of forecast time (for your within-day logic)
             forecast_time = st.time_input(
-                "Morning snapshot time",
-                value=time(10, 0),
-                help="Use this to pull morning-available signals for same-day forecasting.",
+                "Forecast issue time",
+                value=self._model.forecast_time,
+                help="Model assumes DFS procurement occurs between 10am and 11am.",
+                disabled=True,
             )
             st.session_state["forecast_time"] = forecast_time
 
             st.markdown("---")
-            st.caption("Data sources (you can wire these up later)")
-            use_live_sources = st.checkbox("Use live APIs when available", value=False)
-            st.session_state["use_live_sources"] = use_live_sources
+            st.caption("Data sources")
+            st.markdown("[NESO](https://www.neso.energy/data-portal) — DFS and interconnector data")
+            st.markdown("[Elexon](https://bmrs.elexon.co.uk/) — DRM/LoLP and settlement data")
+            # use_live_sources = st.checkbox("Use live APIs when available", value=False)
+            # st.session_state["use_live_sources"] = use_live_sources
 
 
-    # ---------- Helpers (stubs you can fill in) ----------
-    def load_historic_data(self, start: date, end: date, use_live: bool = False) -> dict:
-        """TODO: Replace with your actual loaders.
-        Return a dict with keys you’ll chart on the Dashboard.
-        """
-        # e.g. dfs_events, dfs_utilisation, drm, lolp, ic_flows, system_price, niv
-        return {
-            "dfs_events": None,
-            "dfs_utilisation": None,
-            "drm": None,
-            "lolp": None,
-            "ic_flows": None,
-            "system_price": None,
-            "niv": None,
-        }
+    def _load_historic_data(self, date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Load historic data for a given date."""
+        def _get_data_for_date(df: pd.DataFrame) -> pd.DataFrame:
+            return df[df["datetime"].dt.date == date]
 
+        datetime_idx = pd.date_range(datetime(date.year, date.month, date.day), end=datetime(date.year, date.month, date.day, 23, 30), freq="30min", tz=UTC)
+        settlement_periods = datetime_to_sp_series(pd.Series(datetime_idx))
+        timeseries_df = pd.DataFrame(index=datetime_idx)
+        timeseries_df["settlement_period"] = settlement_periods.values
 
-    def render_placeholder_plot(self, title: str, help_text: str = "") -> None:
+        dfs_data = _get_data_for_date(self._model.dfs_data)
+        lolp_drm_data = _get_data_for_date(self._model.lolp_drm_data)
+        interconnector_data = _get_data_for_date(self._model.interconnector_data)
+        settlement_data = _get_data_for_date(self._model.settlement_data).set_index("datetime")
+
+        dfs_accepted = dfs_data[dfs_data["offer_status"] == "Accepted"]
+        dfs_volume_procured = dfs_accepted.groupby("datetime")["offered_volume_mw"].sum()
+        dfs_max_price = dfs_accepted.groupby("datetime")["offered_price"].max()
+        dfs_min_price = dfs_accepted.groupby("datetime")["offered_price"].min()
+        dfs_vwa_price = (
+            (dfs_accepted["offered_price"] * dfs_accepted["offered_volume_mw"]).groupby(dfs_accepted["datetime"]).sum() /
+            dfs_accepted["offered_volume_mw"].groupby(dfs_accepted["datetime"]).sum()
+        )
+
+        timeseries_df["dfs_volume_procured"] = dfs_volume_procured
+        timeseries_df["dfs_max_price"] = dfs_max_price
+        timeseries_df["dfs_min_price"] = dfs_min_price
+        timeseries_df["dfs_vwa_price"] = dfs_vwa_price
+
+        timeseries_df["drm_forecast_12h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "drm", 12)
+        timeseries_df["drm_forecast_8h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "drm", 8)
+        timeseries_df["drm_forecast_4h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "drm", 4)
+        timeseries_df["drm_forecast_2h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "drm", 2)
+        timeseries_df["drm_forecast_1h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "drm", 1)
+        timeseries_df["lolp_forecast_12h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "lolp", 12)
+        timeseries_df["lolp_forecast_8h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "lolp", 8)
+        timeseries_df["lolp_forecast_4h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "lolp", 4)
+        timeseries_df["lolp_forecast_2h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "lolp", 2)
+        timeseries_df["lolp_forecast_1h"] = self._model._get_drm_lolp_forecast(lolp_drm_data, "lolp", 1)
+
+        timeseries_df["total_interconnector_volume"] = self._model._get_total_interconnector_volume(interconnector_data)
+        timeseries_df["system_price"] = settlement_data["system_price"]
+        timeseries_df["niv"] = settlement_data["niv"]
+
+        return dfs_data, timeseries_df
+
+    def _generate_dfs_chart(self, timeseries_df: pd.DataFrame, dfs_data: pd.DataFrame) -> go.Figure:
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        x_axis = timeseries_df.index.strftime("%H:%M") # type: ignore[attr-defined]
+
+        hovertemplate = "<b>%{fullData.name}</b><br>%{x}, %{y:,.0f}MW<extra></extra>"
+
+        fig.add_trace(
+            go.Bar(
+                x=x_axis,
+                y=timeseries_df["dfs_volume_procured"],
+                name="DFS Procured",
+                marker_color="navy",
+                hovertemplate=hovertemplate,
+            ),
+            secondary_y=False,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_axis,
+                y=timeseries_df["drm_forecast_1h"],
+                name="DRM Forecast (1hr)",
+                mode="lines",
+                line=dict(color="orange"),
+                hovertemplate=hovertemplate,
+            ),
+            secondary_y=True,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_axis,
+                y=timeseries_df["drm_forecast_12h"],
+                name="DRM Forecast (12hr)",
+                mode="lines",
+                line=dict(color="green"),
+                hovertemplate=hovertemplate,
+            ),
+            secondary_y=True,
+        )
+
+        fig.update_yaxes(title_text="DFS Procured (MW)", secondary_y=False, showgrid=True, tickfont=dict(color="black"), title_font=dict(color="black"))
+        fig.update_yaxes(title_text="Derated Margin (MW)", secondary_y=True, showgrid=False, tickfont=dict(color="black"), title_font=dict(color="black"))
+        fig.update_xaxes(showgrid=False, tickfont=dict(color="black"))
+
+        fig.update_layout(
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.3,           # moves below chart area
+                xanchor="center",
+                x=0.5,
+                title=None,
+            ),
+            margin=dict(t=10, r=10, b=10, l=10),
+            bargap=0.2,
+            dragmode="zoom"
+        )
+
+        return fig
+
+    def _render_dfs_detail(self, dfs_data: pd.DataFrame) -> None:
+        with st.container(border=True):
+            ts = st.session_state["dfs_selected_ts"]
+            st.subheader(f"DFS results - {ts:%H:%M} UTC (SP {datetime_to_sp(ts)})")
+            detail = dfs_data.loc[dfs_data["datetime"] == ts].sort_values("offered_price", ascending=False)
+            detail = detail[["dfs_unit_id", "dfs_participant", "offered_volume_mw", "offered_price", "offer_status"]]
+            detail.columns = ["Unit ID", "Participant", "Volume (MW)", "Price (GBP/MWh)", "Status"]
+
+            st.dataframe(detail, hide_index=True, width="stretch")
+
+            # Provide an explicit way back to the chart
+            if st.button("Back to chart"):
+                st.session_state["dfs_selected_ts"] = None
+                st.rerun()
+
+    def _render_chart(self, fig: go.Figure, title: str, help_text: str = "", event_on_select: bool = False) -> PlotlyState:
         with st.container(border=True):
             st.markdown(f"**{title}**")
             if help_text:
                 st.caption(help_text)
-            st.info(
-                "Plot placeholder – insert your Plotly figure here.\n\n"
-                "Example: `st.plotly_chart(fig, use_container_width=True)`",
-                icon="🛠️",
-            )
 
+            kwargs = cast(dict[str, Any], { "use_container_width": True })
+            if event_on_select:
+                kwargs["on_select"] = "rerun"
+                kwargs["selection_mode"] = ("points",)
 
-    def render_home(self) -> None:
+            return st.plotly_chart(fig, **kwargs)
+
+    def _get_bar_click_timestamp(self, event: PlotlyState | dict | None, timeseries_df: pd.DataFrame, date_chosen: date) -> datetime | None:
+        """Extract timestamp only if the bar trace was clicked. Return None otherwise."""
+        if not isinstance(event, dict):
+            return None
+        sel = event.get("selection") or {}
+        points = sel.get("points") or []
+        if not points:
+            return None
+        p = points[0]
+
+        # Identify the bar trace (by index). Common keys: 'curveNumber', 'trace_index'.
+        if p["curve_number"] != 0: # bar trace index
+            return None  # ignore clicks on the line traces
+
+        timestamp = pd.to_datetime(p["x"], utc=True).floor("30min")
+
+        return datetime.combine(date_chosen, timestamp.time(), tzinfo=UTC)
+
+    def _render_home(self) -> None:
         st.title("Demand Flexibility Service (DFS) – Analysis Workspace")
         st.subheader("Take-home overview")
 
@@ -120,59 +260,74 @@ class App:
         )
 
 
-    def render_dashboard(self) -> None:
+    def _render_dashboard(self) -> None:
         st.title("Dashboard")
-        st.caption("Historic context and morning-of snapshot")
+        st.caption("DFS event viewer and system tightness indicators")
 
-        start, end = st.session_state.get("date_range", (None, None))
-        use_live = st.session_state.get("use_live_sources", False)
-        data = self.load_historic_data(start, end, use_live)
+        dfs_event_dates = self._model._dfs_event_dates()
+        label_to_date = { date.strftime("%d/%m/%Y"): date for date in dfs_event_dates }
+        labels = list(label_to_date.keys())
+        # end = max(dfs_event_dates)
+        date_chosen_str = st.select_slider(
+            "Date picker",
+            options=labels,
+            value=labels[-1],
+            help="Only dates with DFS used are shown."
+        )
+        date_chosen = label_to_date[date_chosen_str]
 
-        # --- Row 1: DFS + System Tightness ---
-        st.subheader("Events & System Tightness")
-        c1, c2, c3 = st.columns(3, gap="large")
+        st.subheader(date_chosen.strftime("%d/%m/%Y"))
+
+        dfs_data, timeseries_df = self._load_historic_data(date_chosen)
+
+        c1, c2 = st.columns(2, gap="large")
 
         with c1:
-            self.render_placeholder_plot(
-                "DFS events / utilisation",
-                "Event timeline, accepted MW, and marginal accepted price per event window.",
-            )
+
+            event: PlotlyState | dict[str, Any] | None = None
+
+            if "dfs_selected_ts" in st.session_state and st.session_state["dfs_selected_ts"] is not None:
+                self._render_dfs_detail(dfs_data)
+            else:
+                event = self._render_chart(
+                    self._generate_dfs_chart(timeseries_df, dfs_data),
+                    "DFS",
+                    "Click on bar to drill-down into DFS auction details.",
+                    event_on_select=True,
+                )
+
+        ts = self._get_bar_click_timestamp(event, timeseries_df, date_chosen)
+        if ts is not None:
+            st.session_state["dfs_selected_ts"] = ts
+            st.rerun()
+
+        if isinstance(event, dict): # clear selected timestamp if selection is empty
+            sel = cast(dict[str, Any], event.get("selection", {}))
+            points = sel.get("points", [])
+            if not points and st.session_state.get("dfs_selected_ts"):
+                st.session_state["dfs_selected_ts"] = None
+                st.rerun()
 
         with c2:
-            self.render_placeholder_plot(
-                "Derated Margin (DRM) & LoLP",
-                "Overlay DRM & LoLP around evening SPs; consider max/mean in the peak block.",
-            )
+            pass
 
-        with c3:
-            self.render_placeholder_plot(
-                "Demand forecast vs. outturn (optional)",
-                "Helps explain tightness drivers alongside DRM/LoLP.",
-            )
+        # with c3:
+        #     self.render_placeholder_plot(
+        #         "Demand forecast vs. outturn (optional)",
+        #         "Helps explain tightness drivers alongside DRM/LoLP.",
+        #     )
 
         st.markdown("---")
 
         # --- Row 2: Interconnectors + Prices/NIV ---
         st.subheader("Interconnectors & Imbalance Context")
-        d1, d2, d3 = st.columns(3, gap="large")
+        d1, d2 = st.columns(2, gap="large")
 
         with d1:
-            self.render_placeholder_plot(
-                "Interconnector stance",
-                "DA scheduled flows, % of technical capacity, outages; highlight full-import periods.",
-            )
+            pass
 
         with d2:
-            self.render_placeholder_plot(
-                "System price",
-                "Historic imbalance price distribution around DFS events (back-cast only).",
-            )
-
-        with d3:
-            self.render_placeholder_plot(
-                "Net Imbalance Volume (NIV)",
-                "NIV patterns on event vs non-event days; use descriptively, not as a forward input at 10:00.",
-            )
+            pass
 
         st.markdown("---")
 
@@ -193,6 +348,8 @@ class App:
                 icon="💡",
             )
 
+    def render_forecasting(self) -> None:
+        st.title("Forecasting")
 
     def render_next_steps(self) -> None:
         st.title("Next steps")
@@ -230,8 +387,10 @@ class App:
 
     def route(self) -> None:
         if self.page == "Home":
-            self.render_home()
+            self._render_home()
         elif self.page == "Dashboard":
-            self.render_dashboard()
+            self._render_dashboard()
+        elif self.page == "Forecasting":
+            self.render_forecasting()
         else:
             self.render_next_steps()

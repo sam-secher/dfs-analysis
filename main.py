@@ -12,8 +12,9 @@ def main() -> None:
     args = parse_args()
     setup_logging(args)
 
+    data_downloader = DataDownloader(data_dir="data", rate_limit=10) # Make sure this is disabled before running the app
+
     if args.interface == "cmd":
-        data_downloader = DataDownloader(data_dir="data", rate_limit=10) # Make sure this is disabled before running the app
         data_downloader.run(
             start_dt=datetime(2024, 11, 1, tzinfo=UTC),
             end_dt=datetime(2025, 9, 30, tzinfo=UTC),
@@ -25,11 +26,9 @@ def main() -> None:
 
     data_downloader.load_and_clean()
     forecasting_model = DFSForecastingModel(data_downloader, issue_time=time(10, 0))
-    forecasting_model.train()
-    forecasting_model.predict()
 
     if args.interface == "streamlit":
-        App()
+        App(forecasting_model)
 
 if __name__ == "__main__":
     main()
