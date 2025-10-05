@@ -10,4 +10,13 @@ dependencies:
   - types-requests
   - streamlit
   - pandas-stubs
+  - plotly
+  - scikit-learn
+  - blas[build=*openblas]
+  - libblas[build=*openblas]
+  - libcblas[build=*openblas]
+  - liblapack[build=*openblas]
+  - numpy
+  - scipy
+  - statsmodels
 prefix: C:\Users\sam.secher\AppData\Local\anaconda3\envs\dfs-analysis

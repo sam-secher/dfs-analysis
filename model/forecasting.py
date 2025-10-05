@@ -4,7 +4,9 @@ from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pandas as pd
+import streamlit as st
 from sklearn.impute import SimpleImputer  # type: ignore[import-untyped]
+from sklearn.inspection import permutation_importance  # type: ignore[import-untyped]
 from sklearn.linear_model import LinearRegression, LogisticRegression  # type: ignore[import-untyped]
 from sklearn.metrics import classification_report, mean_absolute_error, mean_squared_error, r2_score, roc_auc_score  # type: ignore[import-untyped]
 from sklearn.model_selection import TimeSeriesSplit  # type: ignore[import-untyped]
@@ -13,9 +15,10 @@ from sklearn.preprocessing import StandardScaler  # type: ignore[import-untyped]
 
 from data.downloader import DataDownloader
 from model.objects.evaluation import EvaluationMetrics
+from utils.caching_helpers import sig_from_df
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Sequence
 
 
 class DFSForecastingModel:
@@ -42,6 +45,9 @@ class DFSForecastingModel:
 
         self.model_dfs_event = cast("Pipeline", None) # logistic regression model for DFS event prediction
         self.model_dfs_max_price = cast("Pipeline", None) # linear regression model for DFS max price prediction
+
+        self._event_pred_threshold = 0.7 # empirically determined
+        self._train_proportion = 0.85 # proportion of data to use for model evaluation
 
     def predict(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
         self.logger.info(f"Predicting DFS events and max prices between {start_dt.strftime('%d/%m/%Y %H:%M')} and {end_dt.strftime('%d/%m/%Y %H:%M')}")
@@ -76,7 +82,7 @@ class DFSForecastingModel:
         ]].between_time(*self._evening_block)
 
         dfs_event_prob = self.model_dfs_event.predict_proba(features_event_pred)[:, 1]
-        dfs_event = pd.Series((dfs_event_prob > 0.7).astype(int), index=features_event_pred.index) # empirically determined threshold
+        dfs_event = pd.Series((dfs_event_prob > self._event_pred_threshold).astype(int), index=features_event_pred.index) # empirically determined threshold
 
         features_price_pred = features_event_pred[dfs_event == 1]
         dfs_max_price = (
@@ -97,11 +103,15 @@ class DFSForecastingModel:
         X_price, y_price = self._get_features_and_target(target_type="dfs_max_price")
 
         y_event_prob = self.model_dfs_event.predict_proba(X_event)[:, 1]
-        y_event_pred = (y_event_prob > 0.7).astype(int) # empirically determined threshold
+        y_event_pred = (y_event_prob > self._event_pred_threshold).astype(int) # empirically determined threshold
 
         event_eval_df = pd.concat([y_event, pd.Series(y_event_pred, index=y_event.index, name="dfs_event_pred")], axis=1)
-        correct_predictions = ((event_eval_df["dfs_event"] == event_eval_df["dfs_event_pred"])*1).sum()
-        proportion_correct = correct_predictions / len(y_event)
+        total_events = event_eval_df["dfs_event"].sum()
+        correct_event_predictions = event_eval_df[event_eval_df["dfs_event"] == 1]["dfs_event_pred"].sum()
+        event_prop_correct = correct_event_predictions / total_events
+        total_non_events = len(event_eval_df) - total_events
+        correct_non_event_predictions = event_eval_df[event_eval_df["dfs_event"] == 0]["dfs_event_pred"].sum()
+        non_event_prop_correct = 1 - (correct_non_event_predictions / total_non_events)
 
         y_price_prob = self.model_dfs_max_price.predict(X_price)
         price_eval_df = pd.concat([y_price, pd.Series(y_price_prob, index=y_price.index, name="dfs_max_price_pred")], axis=1)
@@ -109,19 +119,29 @@ class DFSForecastingModel:
         mae = mean_absolute_error(y_price, y_price_prob)
         rmse = mean_squared_error(y_price, y_price_prob)
 
-        return EvaluationMetrics(event_eval_df, price_eval_df, proportion_correct, r2, mae, rmse)
+        perm_auc = permutation_importance(self.model_dfs_event, X_event, y_event, scoring="roc_auc")
+        event_feat_importance = pd.Series(perm_auc.importances_mean, index=X_event.columns)
+        event_feat_importance_norm = event_feat_importance / event_feat_importance.sum() # normalise
+
+        perm_r2 = permutation_importance(self.model_dfs_max_price, X_price, y_price, scoring="r2")
+        price_feat_importance = pd.Series(perm_r2.importances_mean, index=X_price.columns)
+        price_feat_importance_norm = price_feat_importance / price_feat_importance.sum() # normalise
+
+        return EvaluationMetrics(event_eval_df, price_eval_df, event_prop_correct, non_event_prop_correct, r2, mae, rmse, event_feat_importance_norm, price_feat_importance_norm)
 
 
     def train(self) -> None:
-        self._train_logistic_regressor()
-        self._train_linear_regressor()
+        sig = sig_from_df(self.model_data)
+        self.model_dfs_event = self._train_logistic_regressor(sig)
+        self.model_dfs_max_price = self._train_linear_regressor(sig)
 
-    def _train_linear_regressor(self) -> None:
-        self.logger.info("Training linear regression model for DFS max price prediction")
-        X, y = self._get_features_and_target(target_type="dfs_max_price")
+    @st.cache_resource
+    def _train_linear_regressor(_self, cache_sig: str) -> None: # noqa: N805
+        _self.logger.info("Training linear regression model for DFS max price prediction")
+        X, y = _self._get_features_and_target(target_type="dfs_max_price")
 
         n = len(X)
-        split = int(0.85 * n) # dataset is too small for cross-validation, only ~550 DFS events
+        split = int(_self._train_proportion * n) # dataset is too small for cross-validation, only ~550 DFS events
 
         X_train, X_test = X.iloc[:split], X.iloc[split:]
         y_train, y_test = y.iloc[:split], y.iloc[split:]
@@ -138,23 +158,23 @@ class DFSForecastingModel:
         mae = mean_absolute_error(y_test, y_pred)
         rmse = mean_squared_error(y_test, y_pred)
         r2 = r2_score(y_test, y_pred)
-        self.logger.info(f"MAE: {mae}, RMSE: {rmse}, R2: {r2}")
+        _self.logger.info(f"MAE: {mae}, RMSE: {rmse}, R2: {r2}")
 
         pipe.fit(X, y) # fit on full dataset for deployment
 
-        self.model_dfs_max_price = pipe
+        return pipe
 
-    def _train_logistic_regressor(self) -> None:
-        self.logger.info("Training logistic regression model for DFS event prediction")
+    @st.cache_resource
+    def _train_logistic_regressor(_self, cache_sig: str) -> None:
+        _self.logger.info("Training logistic regression model for DFS event prediction")
 
-        X, y = self._get_features_and_target(target_type="dfs_event")
+        X, y = _self._get_features_and_target(target_type="dfs_event")
 
         tscv = TimeSeriesSplit(n_splits=5)
 
         pipe = Pipeline([
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler(with_mean=True, with_std=True)),
-            # liblinear is very stable for small datasets; class_weight helps if events are rare
             ("clf", LogisticRegression(solver="liblinear", max_iter=1000, class_weight="balanced")),
         ])
 
@@ -167,23 +187,23 @@ class DFSForecastingModel:
             y_pred = pipe.predict(X_test)
             y_prob = pipe.predict_proba(X_test)[:, 1]
 
-            self.logger.info(f"Fold {fold}")
-            self.logger.info(classification_report(y_test, y_pred))
-            self.logger.info("AUC: %f", roc_auc_score(y_test, y_prob))
+            _self.logger.info(f"Fold {fold}")
+            _self.logger.info(classification_report(y_test, y_pred))
+            _self.logger.info("AUC: %f", roc_auc_score(y_test, y_prob))
             auc_scores.append(roc_auc_score(y_test, y_prob))
 
-        self.logger.info("Mean AUC: %f", sum(auc_scores)/len(auc_scores))
+        _self.logger.info("Mean AUC: %f", sum(auc_scores)/len(auc_scores))
 
         coef_df = pd.DataFrame({
             "feature": X.columns,
             "coef": pipe.named_steps["clf"].coef_[0],
         }).sort_values("coef", ascending=False)
 
-        self.logger.info(coef_df)
+        _self.logger.info(coef_df)
 
         pipe.fit(X, y) # fit on full dataset for deployment
 
-        self.model_dfs_event = pipe
+        return pipe
 
     def _get_features_and_target(self, target_type: Literal["dfs_event", "dfs_max_price"]) -> tuple[pd.DataFrame, "pd.Series[float | int]"]:
 
@@ -300,7 +320,7 @@ class DFSForecastingModel:
 
         return model_data
 
-    def _dfs_event_dates(self) -> "Iterable[date]":
+    def _dfs_event_dates(self) -> "Sequence[date]":
         return self.model_data[self.model_data["dfs_event"] == 1].index.unique().date # type: ignore[attr-defined]
 
     def _get_drm_lolp_forecast(self, lolp_drm_data: pd.DataFrame, drm_lolp: Literal["drm", "lolp"], horizon: int) -> "pd.Series[float]":
