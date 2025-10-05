@@ -1,22 +1,16 @@
 name: dfs-analysis
 channels:
   - conda-forge
-  - https://conda.anaconda.org/gurobi
-  - defaults
+channel_priority: strict
 dependencies:
   - requests
-  - python
+  - python=3.11
   - pandas
-  - types-requests
-  - streamlit
-  - pandas-stubs
+  - streamlit>=1.50
   - plotly
   - scikit-learn
-  - blas[build=*openblas]
-  - libblas[build=*openblas]
-  - libcblas[build=*openblas]
-  - liblapack[build=*openblas]
   - numpy
   - scipy
-  - statsmodels
-prefix: C:\Users\sam.secher\AppData\Local\anaconda3\envs\dfs-analysis
+  - pip:
+    - pandas-stubs
+    - types-requests
