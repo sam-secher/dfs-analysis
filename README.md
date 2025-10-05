@@ -144,7 +144,7 @@ $$
 ```bash
 # 1. Clone this repo
 git clone https://github.com/<sam-secher>/<dfs-analysis>.git
-cd <repo-name>
+cd <dfs-analysis>
 
 # 2. Create and activate the environment
 conda env create -f environment.yml
