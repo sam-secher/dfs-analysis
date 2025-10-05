@@ -12,7 +12,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--interface",
-        default="cmd",
+        default="streamlit",
         type=str,
         choices=["cmd", "streamlit"],
         help="Set the interface for the app",
