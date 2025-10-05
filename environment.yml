@@ -1,7 +1,6 @@
 name: dfs-analysis
 channels:
   - conda-forge
-channel_priority: strict
 dependencies:
   - requests
   - python=3.11
@@ -11,6 +10,7 @@ dependencies:
   - scikit-learn
   - numpy
   - scipy
+  - pip
   - pip:
     - pandas-stubs
     - types-requests
