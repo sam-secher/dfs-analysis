@@ -9,7 +9,7 @@ from streamlit.elements.plotly_chart import PlotlyState
 
 from model.forecasting import DFSForecastingModel
 from model.objects.evaluation import EvaluationMetrics
-from utils.datetime_helpers import datetime_to_sp_series, datetime_to_sp
+from utils.datetime_helpers import datetime_to_sp, datetime_to_sp_series
 
 
 class App:
@@ -23,7 +23,7 @@ class App:
 
     def set_page_config(self) -> None:
         st.set_page_config(
-            page_title="DFS Analysis – Take-home",
+            page_title="DFS Analysis",
             page_icon="⚡",
             layout="wide",
             initial_sidebar_state="expanded",
@@ -112,11 +112,81 @@ class App:
 
         return dfs_data, timeseries_df
 
-    def _render_interconnector_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> None:
-        fig = self._create_interconnector_chart(timeseries_df, date_chosen)
+    def _render_monthly_event_chart(self) -> None:
+        fig = self._create_monthly_event_chart()
+        self._render_chart(fig, help_text="Hover over series to inspect values.")
+
+    def _create_monthly_event_chart(self) -> go.Figure:
+
+        dfs_data_all = self._model.dfs_data[self._model.dfs_data["offer_status"] == "Accepted"].copy()
+        volume_procured = dfs_data_all.groupby("datetime")["offered_volume_mw"].sum()
+        event = (volume_procured > 0).astype(int)
+
+        dfs_data_all = pd.DataFrame({"datetime": volume_procured.index, "event": event, "offered_volume_mw": volume_procured})
+
+        monthly_totals = dfs_data_all[["datetime", "event", "offered_volume_mw"]].groupby(pd.Grouper(key="datetime", freq="M")).sum(numeric_only=True)
+        monthly_totals.index = monthly_totals.index.to_period("M").to_timestamp(how="start").tz_localize(UTC) # type: ignore[attr-defined]
+
+        start_month = datetime(self._model.model_data_start.year, self._model.model_data_start.month, 1, tzinfo=UTC)
+        end_month = datetime(self._model.model_data_end.year, self._model.model_data_end.month, 1, tzinfo=UTC)
+
+        monthly_totals = monthly_totals[(monthly_totals.index >= start_month) & (monthly_totals.index <= end_month)]
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        x_axis = monthly_totals.index.strftime("%b-%y") # type: ignore[attr-defined]
+
+        hovertemplate_freq = "<b>%{fullData.name}</b><br>%{x}, %{y:.0f}<extra></extra>"
+        hovertemplate_volume = "<b>%{fullData.name}</b><br>%{x}, %{y:.0f}MW<extra></extra>"
+
+        fig.add_trace(
+            go.Bar(
+                x=x_axis,
+                y=monthly_totals["event"],
+                name="Frequency",
+                marker_color="navy",
+                hovertemplate=hovertemplate_freq,
+            ),
+            secondary_y=False,
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_axis,
+                y=monthly_totals["offered_volume_mw"],
+                name="Volume",
+                mode="lines",
+                line=dict(color="orange", dash="dash"),
+                hovertemplate=hovertemplate_volume,
+            ),
+            secondary_y=True,
+        )
+
+        fig.update_yaxes(title_text="Frequency", secondary_y=False, showgrid=True, tickfont=dict(color="black"), title_font=dict(color="black"))
+        fig.update_yaxes(title_text="Volume (MW)", secondary_y=True, showgrid=False, tickfont=dict(color="black"), title_font=dict(color="black"))
+        fig.update_xaxes(showgrid=False, tickfont=dict(color="black"))
+
+        fig.update_layout(
+            legend=dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.3,           # moves below chart area
+                xanchor="center",
+                x=0.5,
+                title=None,
+            ),
+            margin=dict(t=10, r=10, b=10, l=10),
+            bargap=0.2,
+            dragmode="zoom",
+        )
+
+        return fig
+
+    def _render_interconnector_chart(self, timeseries_df: pd.DataFrame) -> None:
+        fig = self._create_interconnector_chart(timeseries_df)
         self._render_chart(fig, "Interconnection", help_text="Hover over bars to inspect values, negative is export.")
 
-    def _create_interconnector_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> go.Figure:
+    def _create_interconnector_chart(self, timeseries_df: pd.DataFrame) -> go.Figure:
         fig = make_subplots()
 
         x_axis = timeseries_df.index.strftime("%H:%M") # type: ignore[attr-defined]
@@ -148,16 +218,16 @@ class App:
             ),
             margin=dict(t=10, r=10, b=10, l=10),
             bargap=0.2,
-            dragmode="zoom"
+            dragmode="zoom",
         )
 
         return fig
 
-    def _render_settlement_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> None:
-        fig = self._create_settlement_chart(timeseries_df, date_chosen)
-        self._render_chart(fig, "Settlement Data", help_text="Hover over series to inspect values.")
+    def _render_settlement_chart(self, timeseries_df: pd.DataFrame) -> None:
+        fig = self._create_settlement_chart(timeseries_df)
+        self._render_chart(fig, "Settlement Data", help_text="Hover over series to inspect values, positive NIV is short.")
 
-    def _create_settlement_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> go.Figure:
+    def _create_settlement_chart(self, timeseries_df: pd.DataFrame) -> go.Figure:
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
         x_axis = timeseries_df.index.strftime("%H:%M") # type: ignore[attr-defined]
@@ -203,16 +273,16 @@ class App:
             ),
             margin=dict(t=10, r=10, b=10, l=10),
             bargap=0.2,
-            dragmode="zoom"
+            dragmode="zoom",
         )
 
         return fig
 
-    def _render_lolp_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> None:
-        fig = self._create_lolp_chart(timeseries_df, date_chosen)
+    def _render_lolp_chart(self, timeseries_df: pd.DataFrame) -> None:
+        fig = self._create_lolp_chart(timeseries_df)
         self._render_chart(fig, "LoLP", help_text="Hover over line to inspect values.")
 
-    def _create_lolp_chart(self, timeseries_df: pd.DataFrame, date_chosen: date) -> go.Figure:
+    def _create_lolp_chart(self, timeseries_df: pd.DataFrame) -> go.Figure:
         fig = make_subplots()
 
         x_axis = timeseries_df.index.strftime("%H:%M") # type: ignore[attr-defined]
@@ -227,7 +297,7 @@ class App:
                 mode="lines",
                 line=dict(color="orange"),
                 hovertemplate=hovertemplate,
-            )
+            ),
         )
 
         fig.add_trace(
@@ -238,7 +308,7 @@ class App:
                 mode="lines",
                 line=dict(color="green"),
                 hovertemplate=hovertemplate,
-            )
+            ),
         )
 
         fig.update_yaxes(tickformat=".6%", title_text="%", showgrid=True, tickfont=dict(color="black"), title_font=dict(color="black"))
@@ -267,16 +337,16 @@ class App:
             self._render_dfs_detail(dfs_data)
         else:
             event = self._render_chart(
-                self._generate_dfs_chart(timeseries_df, dfs_data),
+                self._generate_dfs_chart(timeseries_df),
                 "DFS",
                 "Click on bar to drill-down into DFS auction details.",
                 event_on_select=True,
             )
 
-        self._handle_dfs_chart_click(event, timeseries_df, date_chosen)
+        self._handle_dfs_chart_click(event, date_chosen)
 
 
-    def _generate_dfs_chart(self, timeseries_df: pd.DataFrame, dfs_data: pd.DataFrame) -> go.Figure:
+    def _generate_dfs_chart(self, timeseries_df: pd.DataFrame) -> go.Figure:
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
         x_axis = timeseries_df.index.strftime("%H:%M") # type: ignore[attr-defined]
@@ -334,19 +404,19 @@ class App:
             autosize=True,
             margin=dict(t=10, r=10, b=10, l=10),
             bargap=0.2,
-            dragmode="zoom"
+            dragmode="zoom",
         )
 
         return fig
 
-    def _handle_dfs_chart_click(self, event: PlotlyState | dict | None, timeseries_df: pd.DataFrame, date_chosen: date) -> None:
-        ts = self._get_bar_click_timestamp(event, timeseries_df, date_chosen)
+    def _handle_dfs_chart_click(self, event: PlotlyState | dict | None, date_chosen: date) -> None:
+        ts = self._get_bar_click_timestamp(event, date_chosen)
         if ts is not None:
             st.session_state["dfs_selected_ts"] = ts
             st.rerun()
 
         if isinstance(event, dict): # clear selected timestamp if selection is empty
-            sel = cast(dict[str, Any], event.get("selection", {}))
+            sel = cast("dict[str, Any]", event.get("selection", {}))
             points = sel.get("points", [])
             if not points and st.session_state.get("dfs_selected_ts"):
                 st.session_state["dfs_selected_ts"] = None
@@ -371,14 +441,14 @@ class App:
         if help_text:
             st.caption(help_text)
 
-        kwargs = cast(dict[str, Any], { "use_container_width": True })
+        kwargs = cast("dict[str, Any]", { "use_container_width": True })
         if event_on_select:
             kwargs["on_select"] = "rerun"
             kwargs["selection_mode"] = ("points",)
 
         return st.plotly_chart(fig, **kwargs)
 
-    def _get_bar_click_timestamp(self, event: PlotlyState | dict | None, timeseries_df: pd.DataFrame, date_chosen: date) -> datetime | None:
+    def _get_bar_click_timestamp(self, event: PlotlyState | dict | None, date_chosen: date) -> datetime | None:
         """Extract timestamp only if the bar trace was clicked. Return None otherwise."""
         if not isinstance(event, dict):
             return None
@@ -468,14 +538,19 @@ class App:
             with c1:
                 self._render_dfs_chart(timeseries_df, dfs_data, date_chosen)
             with c2:
-                self._render_lolp_chart(timeseries_df, date_chosen)
+                self._render_lolp_chart(timeseries_df)
 
             d1, d2 = st.columns(2, gap="small")
 
             with d1:
-                self._render_settlement_chart(timeseries_df, date_chosen)
+                self._render_settlement_chart(timeseries_df)
             with d2:
-                self._render_interconnector_chart(timeseries_df, date_chosen)
+                self._render_interconnector_chart(timeseries_df)
+
+        with st.container(border=True):
+            st.subheader("Monthly Event Frequency & Volume")
+
+            self._render_monthly_event_chart()
 
     def _render_date_slider(self) -> date:
         dfs_event_dates = self._model._dfs_event_dates()
@@ -594,7 +669,7 @@ class App:
                 mode="lines",
                 line=dict(color="black"),
                 hovertemplate=hovertemplate,
-            )
+            ),
         )
 
         fig.add_trace(
@@ -605,7 +680,7 @@ class App:
                 mode="lines",
                 line=dict(color="red"),
                 hovertemplate=hovertemplate,
-            )
+            ),
         )
 
         fig.update_yaxes(title_text="DFS Max Price (GBP/MWh)", showgrid=True, tickfont=dict(color="black"), title_font=dict(color="black"))
