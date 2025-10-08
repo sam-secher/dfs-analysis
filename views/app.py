@@ -119,7 +119,7 @@ class App:
     def _create_monthly_event_chart(self) -> go.Figure:
 
         dfs_data_all = self._model.dfs_data[self._model.dfs_data["offer_status"] == "Accepted"].copy()
-        volume_procured = dfs_data_all.groupby("datetime")["offered_volume_mw"].sum()
+        volume_procured = dfs_data_all.groupby("datetime")["offered_volume_mw"].sum() * 0.5 # MW to MWh
         event = (volume_procured > 0).astype(int)
 
         dfs_data_all = pd.DataFrame({"datetime": volume_procured.index, "event": event, "offered_volume_mw": volume_procured})
@@ -137,7 +137,7 @@ class App:
         x_axis = monthly_totals.index.strftime("%b-%y") # type: ignore[attr-defined]
 
         hovertemplate_freq = "<b>%{fullData.name}</b><br>%{x}, %{y:.0f}<extra></extra>"
-        hovertemplate_volume = "<b>%{fullData.name}</b><br>%{x}, %{y:.0f}MW<extra></extra>"
+        hovertemplate_volume = "<b>%{fullData.name}</b><br>%{x}, %{y:.0f}MWh<extra></extra>"
 
         fig.add_trace(
             go.Bar(
@@ -163,7 +163,7 @@ class App:
         )
 
         fig.update_yaxes(title_text="Frequency", secondary_y=False, showgrid=True, tickfont=dict(color="black"), title_font=dict(color="black"))
-        fig.update_yaxes(title_text="Volume (MW)", secondary_y=True, showgrid=False, tickfont=dict(color="black"), title_font=dict(color="black"))
+        fig.update_yaxes(title_text="Volume (MWh)", secondary_y=True, showgrid=False, tickfont=dict(color="black"), title_font=dict(color="black"))
         fig.update_xaxes(showgrid=False, tickfont=dict(color="black"))
 
         fig.update_layout(
